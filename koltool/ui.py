@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from .database import Database
+from .database import Database, GALAXY_TAG, WORKFLOW_STATUSES
 from .demo import profiles as demo_profiles
 from .exporter import export_csv, export_xlsx
 from .keywords import parse_bulk_keywords
@@ -98,7 +98,7 @@ class DetailDialog(QDialog):
         form = QFormLayout(editor)
         self.tags = QLineEdit("、".join(self.profile["tags"]))
         self.score = QSpinBox(); self.score.setRange(0, 100); self.score.setValue(self.profile["score"])
-        self.status = QComboBox(); self.status.addItems(["待联系", "已联系", "已回复", "不合作", "已合作"]); self.status.setCurrentText(self.profile["review_status"])
+        self.status = QComboBox(); self.status.addItems(WORKFLOW_STATUSES); self.status.setCurrentText(self.profile["workflow_status"])
         self.note = QPlainTextEdit(self.profile["note"]); self.note.setMaximumHeight(70)
         self.favorite = QCheckBox("收藏标记"); self.favorite.setChecked(self.profile["favorite"])
         form.addRow("内容标签", self.tags); form.addRow("合作匹配度", self.score); form.addRow("审核状态", self.status); form.addRow("备注", self.note); form.addRow("", self.favorite)
@@ -123,7 +123,7 @@ class DetailDialog(QDialog):
         <p>标签：{'、'.join(p['tags']) or '未标记'}<br>公开联系入口：{contacts}</p>
         <h3>潮流勁抽推广识别</h3><p><b>{p['promotion_status']}</b><br>检索时间：{p['checked_at']}；检索视频：{p['scanned_videos']} 条<br>{evidence}</p>
         <h3>最近相关视频</h3><ol>{video_lines}</ol>
-        <h3>评分与合规</h3><p>{p['score']} 分：{p['score_reason']}<br>可能面向未成年人风险：{risk}<br>需确认当地广告披露、抽奖及未成年人营销合规。</p>
+        <h3>评分与合规</h3><p>匹配评分：{p['score']} 分：{p['score_reason']}<br>当前状态：{p['workflow_status']}；内容分类：{p['content_type']}<br>可能面向未成年人风险：{risk}<br>需确认当地广告披露、抽奖及未成年人营销合规。</p>
         """)
 
     def save(self):
@@ -181,11 +181,12 @@ class MainWindow(QMainWindow):
         filters = QHBoxLayout()
         self.filter_region = QComboBox(); self.filter_region.addItems(["全部地区", "台湾", "香港", "无法确认"])
         self.filter_confidence = QComboBox(); self.filter_confidence.addItems(["全部置信度", "高", "中", "低", "无法确认"])
-        self.filter_status = QComboBox(); self.filter_status.addItems(["全部审核状态", "待联系", "已联系", "已回复", "不合作", "已合作"])
+        self.filter_status = QComboBox(); self.filter_status.addItems(["未处理", "全部状态", *WORKFLOW_STATUSES])
+        self.filter_galaxy = QComboBox(); self.filter_galaxy.addItems(["全部标签", "仅银河潮赏"])
         self.filter_kind = QComboBox(); self.filter_kind.addItems(["全部类别", "潮玩/手办", "卡牌", "玩具/亲子"])
         self.filter_min_subs = QSpinBox(); self.filter_min_subs.setRange(0, 100000000); self.filter_min_subs.setPrefix("订阅 >= ")
         self.filter_min_views = QSpinBox(); self.filter_min_views.setRange(0, 100000000); self.filter_min_views.setPrefix("平均观看 >= ")
-        for widget in [self.filter_region, self.filter_confidence, self.filter_status, self.filter_kind, self.filter_min_subs, self.filter_min_views]:
+        for widget in [self.filter_region, self.filter_confidence, self.filter_status, self.filter_galaxy, self.filter_kind, self.filter_min_subs, self.filter_min_views]:
             if isinstance(widget, QComboBox):
                 widget.currentIndexChanged.connect(lambda _index: self.refresh())
             else:
@@ -196,12 +197,12 @@ class MainWindow(QMainWindow):
         filters.addWidget(export)
         layout.addLayout(filters)
         self.tabs = QTabWidget(); self.tables = {}
-        for key, title in [("promoted", "A. 已推广过潮流勁抽"), ("not_found", "B. 未发现推广过潮流勁抽"), ("unconfirmed", "待确认地区")]:
+        for key, title in [("promoted", "A. 已推广过潮流勁抽"), ("not_found", "B. 未发现推广过潮流勁抽"), ("unconfirmed", "待确认地区"), ("galaxy", "银河潮赏")]:
             table = QTableWidget(0, len(self.COLUMNS)); table.setHorizontalHeaderLabels(self.COLUMNS); table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSortingEnabled(False); table.cellDoubleClicked.connect(lambda row, col, t=table: self.open_detail(t, row)); table.horizontalHeader().setStretchLastSection(True)
             self.tables[key] = table; self.tabs.addTab(table, title)
         layout.addWidget(self.tabs, 1)
-        self.statusBar().showMessage("本地数据库：data/kol_search.sqlite")
+        self.statusBar().showMessage("本地数据库：data/kol_search.sqlite；默认仅显示未处理 KOL。")
         self.setStyleSheet("QGroupBox { font-weight: 600; } #notice { background: #FFF4CE; border: 1px solid #E7C65C; padding: 8px; } QTableWidget { gridline-color: #D9E2F3; } QPushButton { min-height: 28px; }")
 
     def seed_demo_if_needed(self):
@@ -228,26 +229,27 @@ class MainWindow(QMainWindow):
                 source = "内置演示数据"
             else:
                 client = YouTubeClient(self.db.get_setting("youtube_api_key"))
-                found = client.discover(words, "TW" if self.region.currentText() == "台湾" else "HK", self.max_results.value(), self.mode.currentText(), self.query.text())
+                found = client.discover(words, "TW" if self.region.currentText() == "台湾" else "HK", self.max_results.value(), self.mode.currentText(), self.query.text(), self.db.processed_channel_ids())
                 source = "YouTube Data API"
             accepted = 0
             for profile in found:
                 if profile["subscribers"] >= self.min_subs.value() and profile["posts_90"] >= self.min_posts.value() and profile["avg_views"] >= self.min_views.value():
                     self.db.upsert_profile(profile); accepted += 1
             self.refresh()
-            self.statusBar().showMessage(f"{source} 完成：发现 {len(found)} 个去重频道，保存 {accepted} 个符合门槛的档案。", 9000)
+            self.statusBar().showMessage(f"{source} 完成：发现 {len(found)} 个新的目标 KOL，保存 {accepted} 个符合门槛的档案。已自动排除已处理档案和非目标内容。", 10000)
         except YouTubeApiError as exc:
             QMessageBox.warning(self, "搜索失败", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "搜索异常", f"搜索未完成：{exc}")
 
-    def _filtered(self, profiles: list[dict]) -> list[dict]:
+    def _filtered(self, profiles: list[dict], include_status: bool = True) -> list[dict]:
         region, confidence, status, kind = self.filter_region.currentText(), self.filter_confidence.currentText(), self.filter_status.currentText(), self.filter_kind.currentText()
         result = []
         for p in profiles:
             if region != "全部地区" and p["region"] != region: continue
             if confidence != "全部置信度" and p["region_confidence"] != confidence: continue
-            if status != "全部审核状态" and p["review_status"] != status: continue
+            if include_status and status != "全部状态" and p["workflow_status"] != status: continue
+            if self.filter_galaxy.currentText() == "仅银河潮赏" and GALAXY_TAG not in p["tags"]: continue
             if p["subscribers"] < self.filter_min_subs.value() or p["avg_views"] < self.filter_min_views.value(): continue
             tag_text = " ".join(p["tags"]).casefold()
             if kind == "潮玩/手办" and not any(x in tag_text for x in ["手办", "手辦", "模型", "公仔", "盲盒", "潮玩", "一番"]): continue
@@ -258,7 +260,8 @@ class MainWindow(QMainWindow):
 
     def refresh(self):
         profiles = self._filtered(self.db.get_profiles())
-        groups = {"promoted": [], "not_found": [], "unconfirmed": []}
+        galaxy_profiles = self._filtered(self.db.get_profiles(), include_status=False)
+        groups = {"promoted": [], "not_found": [], "unconfirmed": [], "galaxy": [p for p in galaxy_profiles if GALAXY_TAG in p["tags"]]}
         for profile in profiles:
             if profile["region"] == "无法确认": groups["unconfirmed"].append(profile)
             elif profile["promotion_status"] == "已推广过潮流勁抽": groups["promoted"].append(profile)
@@ -271,12 +274,13 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(value); item.setData(Qt.ItemDataRole.UserRole, p["channel_id"])
                     table.setItem(row, col, item)
             table.resizeColumnsToContents()
-            label = {"promoted": "A. 已推广过潮流勁抽", "not_found": "B. 未发现推广过潮流勁抽", "unconfirmed": "待确认地区"}[key]
+            label = {"promoted": "A. 已推广过潮流勁抽", "not_found": "B. 未发现推广过潮流勁抽", "unconfirmed": "待确认地区", "galaxy": "银河潮赏"}[key]
             self.tabs.setTabText(self.tabs.indexOf(table), f"{label} ({len(records)})")
 
     def open_detail(self, table: QTableWidget, row: int):
         item = table.item(row, 0)
         if not item: return
+        self.db.mark_viewed(item.data(Qt.ItemDataRole.UserRole))
         DetailDialog(self.db, item.data(Qt.ItemDataRole.UserRole), self).exec()
         self.refresh()
 
