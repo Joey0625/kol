@@ -9,7 +9,7 @@ import requests
 from .keywords import keyword_hits
 from .promotion import find_promotion
 from .region import decide_region
-from .scoring import calculate_score
+from .scoring import assess_target, calculate_score
 
 
 class YouTubeApiError(RuntimeError):
@@ -32,23 +32,27 @@ class YouTubeClient:
             raise YouTubeApiError(f"YouTube API 请求失败（{response.status_code}）：{message}")
         return response.json()
 
-    def discover(self, keywords: list[str], region_code: str, limit: int, search_mode: str, query: str = "") -> list[dict]:
+    def discover(self, keywords: list[str], region_code: str, limit: int, search_mode: str, query: str = "", excluded_channel_ids: set[str] | None = None) -> list[dict]:
         queries = [query.strip()] if query.strip() else keywords
+        excluded_channel_ids = excluded_channel_ids or set()
         channel_ids: list[str] = []
+        candidate_limit = max(limit * 4, 50)
         for term in queries[:20]:
-            results = self._get("search", part="snippet", q=term, type="video", regionCode=region_code, relevanceLanguage="zh-Hant", maxResults=min(10, limit))
+            results = self._get("search", part="snippet", q=term, type="video", regionCode=region_code, relevanceLanguage="zh-Hant", maxResults=min(50, candidate_limit))
             for item in results.get("items", []):
                 channel_id = item.get("snippet", {}).get("channelId")
-                if channel_id and channel_id not in channel_ids:
+                if channel_id and channel_id not in excluded_channel_ids and channel_id not in channel_ids:
                     channel_ids.append(channel_id)
-                if len(channel_ids) >= limit:
+                if len(channel_ids) >= candidate_limit:
                     break
-            if len(channel_ids) >= limit:
+            if len(channel_ids) >= candidate_limit:
                 break
         if search_mode == "频道" and query.strip():
             results = self._get("search", part="snippet", q=query.strip(), type="channel", regionCode=region_code, relevanceLanguage="zh-Hant", maxResults=min(25, limit))
-            channel_ids = [item["id"]["channelId"] for item in results.get("items", []) if item.get("id", {}).get("channelId")]
-        return self._hydrate(channel_ids[:limit], keywords)
+            channel_ids = [item["id"]["channelId"] for item in results.get("items", []) if item.get("id", {}).get("channelId") and item["id"]["channelId"] not in excluded_channel_ids]
+        profiles = self._hydrate(channel_ids[:candidate_limit], keywords)
+        eligible = [profile for profile in profiles if profile.get("eligible", False)]
+        return sorted(eligible, key=lambda profile: profile["score"], reverse=True)[:limit]
 
     def _hydrate(self, channel_ids: list[str], keywords: list[str]) -> list[dict]:
         output: list[dict] = []
@@ -100,9 +104,11 @@ class YouTubeClient:
             "matched_keywords": keyword_hits(desc + " " + video_text, keywords), "subscribers": int(stats.get("subscriberCount", 0)), "total_videos": int(stats.get("videoCount", 0)),
             "posts_90": len(recent), "avg_views": avg_views, "engagement_rate": round(engagement, 4), "contacts": contacts,
             "promotion_status": promo["status"], "evidence": promo["evidence"], "checked_at": promo["checked_at"], "scanned_videos": promo["scanned_videos"],
-            "review_status": "待联系", "note": "", "favorite": False, "source": "YouTube Data API v3（公开频道与视频元数据）", "sourced_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "videos": videos[:5],
+            "review_status": "未处理", "workflow_status": "未处理", "note": "", "favorite": False, "source": "YouTube Data API v3（公开频道与视频元数据）", "sourced_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "videos": videos[:5],
         }
-        profile["score"], profile["score_reason"], profile["minor_risk"] = calculate_score(profile)
+        eligible, content_type, quality_score, quality_reason = assess_target(profile)
+        base_score, base_reason, profile["minor_risk"] = calculate_score(profile)
+        profile.update({"eligible": eligible, "content_type": content_type, "exclusion_reason": "" if eligible else quality_reason, "score": quality_score if eligible else base_score, "score_reason": quality_reason if eligible else f"{quality_reason}；{base_reason}"})
         return profile
 
 
