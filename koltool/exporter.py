@@ -15,7 +15,7 @@ EXPORT_FIELDS = [
     ("订阅数", "subscribers"), ("总视频数", "total_videos"), ("近90天发片数", "posts_90"), ("近期视频平均观看量", "avg_views"),
     ("互动率估算", "engagement_rate"), ("公开联系入口", "contacts"), ("潮流勁抽推广识别", "promotion_status"),
     ("检索时间", "checked_at"), ("检索视频数量", "scanned_videos"), ("已推广证据", "evidence"), ("合作匹配度", "score"),
-    ("评分说明", "score_reason"), ("人工审核状态", "review_status"), ("备注", "note"), ("收藏", "favorite"),
+    ("评分说明", "score_reason"), ("KOL 状态", "workflow_status"), ("内容分类", "content_type"), ("人工审核状态", "review_status"), ("备注", "note"), ("收藏", "favorite"),
     ("未成年人风险", "minor_risk"), ("数据来源", "source"), ("采集时间", "sourced_at"), ("最近5条相关视频", "videos"),
     ("合规提示", "compliance_notice"),
 ]
