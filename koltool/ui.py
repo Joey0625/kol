@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-    QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QAbstractItemView, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -193,12 +193,14 @@ class MainWindow(QMainWindow):
                 widget.valueChanged.connect(lambda _value: self.refresh())
             filters.addWidget(widget)
         filters.addStretch()
+        batch = QPushButton("批量管理"); batch.clicked.connect(self.batch_update)
         export = QPushButton("导出当前结果"); export.clicked.connect(self.export)
+        filters.addWidget(batch)
         filters.addWidget(export)
         layout.addLayout(filters)
         self.tabs = QTabWidget(); self.tables = {}
         for key, title in [("promoted", "A. 已推广过潮流勁抽"), ("not_found", "B. 未发现推广过潮流勁抽"), ("unconfirmed", "待确认地区"), ("galaxy", "银河潮赏")]:
-            table = QTableWidget(0, len(self.COLUMNS)); table.setHorizontalHeaderLabels(self.COLUMNS); table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table = QTableWidget(0, len(self.COLUMNS)); table.setHorizontalHeaderLabels(self.COLUMNS); table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection); table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSortingEnabled(False); table.cellDoubleClicked.connect(lambda row, col, t=table: self.open_detail(t, row)); table.horizontalHeader().setStretchLastSection(True)
             self.tables[key] = table; self.tabs.addTab(table, title)
         layout.addWidget(self.tabs, 1)
@@ -283,6 +285,27 @@ class MainWindow(QMainWindow):
         self.db.mark_viewed(item.data(Qt.ItemDataRole.UserRole))
         DetailDialog(self.db, item.data(Qt.ItemDataRole.UserRole), self).exec()
         self.refresh()
+
+    def batch_update(self):
+        table = self.tabs.currentWidget()
+        channel_ids = {table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole) for index in table.selectionModel().selectedRows() if table.item(index.row(), 0)}
+        if not channel_ids:
+            QMessageBox.information(self, "批量管理", "请先在当前列表中选择至少一个 KOL。")
+            return
+        status, ok = QInputDialog.getItem(self, "批量更新状态", "设置状态（选择“不变”仅更新标签）：", ["不变", *WORKFLOW_STATUSES], 0, False)
+        if not ok:
+            return
+        tag_text, ok = QInputDialog.getText(self, "批量追加标签", "标签（用顿号、逗号或分号分隔；留空则不改标签）：")
+        if not ok:
+            return
+        new_tags = [part.strip() for part in tag_text.replace("，", "、").replace(",", "、").replace(";", "、").replace("；", "、").split("、") if part.strip()]
+        for channel_id in channel_ids:
+            profile = self.db.get_profile(channel_id)
+            tags = list(dict.fromkeys(profile["tags"] + new_tags))
+            workflow_status = profile["workflow_status"] if status == "不变" else status
+            self.db.update_review(channel_id, tags, profile["score"], workflow_status, profile["note"], profile["favorite"])
+        self.refresh()
+        self.statusBar().showMessage(f"已批量更新 {len(channel_ids)} 个 KOL。", 6000)
 
     def export(self):
         profiles = self._filtered(self.db.get_profiles())
